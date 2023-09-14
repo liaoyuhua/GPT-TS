@@ -1,6 +1,3 @@
-"""
-Reference: Informer (2020).
-"""
 import os
 import pandas as pd
 import numpy as np
@@ -25,14 +22,15 @@ class Dataset_ETT_hour(Dataset):
         freq="h",
         cols=None,
     ):
-        super(Dataset_ETT_hour, self).__init__()
+        # size [seq_len, pred_len]
+        # info
         if size == None:
             self.seq_len = 24 * 4 * 4
             self.pred_len = 24 * 4
         else:
             self.seq_len = size[0]
             self.pred_len = size[1]
-
+        # init
         assert flag in ["train", "test", "val"]
         type_map = {"train": 0, "val": 1, "test": 2}
         self.set_type = type_map[flag]
@@ -62,7 +60,6 @@ class Dataset_ETT_hour(Dataset):
             12 * 30 * 24 + 4 * 30 * 24,
             12 * 30 * 24 + 8 * 30 * 24,
         ]
-
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
 
@@ -91,34 +88,26 @@ class Dataset_ETT_hour(Dataset):
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
-        i_begin = index
-        i_sep = i_begin + self.seq_len - 1
-        i_end = i_begin + self.seq_len + self.pred_len - 1
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end
+        r_end = r_begin + self.pred_len
 
-        seq_x = self.data_x[i_begin:i_end]
-        if self.inverse:
-            seq_y = np.concatenate(
-                [self.data_x[i_begin + 1 : i_sep], self.data_y[i_sep : i_end + 1]], 0
-            )
-        else:
-            seq_y = self.data_y[i_begin + 1 : i_end + 1]
+        seq_x = self.data_x[s_begin:s_end]
+        seq_y = self.data_y[r_begin:r_end]
+        # seq_x_mark = self.data_stamp[s_begin:s_end]
+        # seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        x = torch.tensor(seq_x, dtype=torch.float)
-        y = torch.tensor(seq_y, dtype=torch.float)
-        x_mark = torch.tensor(self.data_stamp[i_begin:i_end], dtype=torch.int)
+        x = torch.tensor(seq_x, dtype=torch.float).transpose(1, 0)
+        y = torch.tensor(seq_y, dtype=torch.float).transpose(1, 0)
 
-        y[: self.seq_len - 1] = float("nan")
-
-        return x, y, x_mark
+        return x, y
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
-
-    def get_block_size(self):
-        return self.seq_len + self.pred_len - 1
 
 
 class Dataset_ETT_minute(Dataset):
@@ -136,7 +125,7 @@ class Dataset_ETT_minute(Dataset):
         freq="t",
         cols=None,
     ):
-        super(Dataset_ETT_hour, self).__init__()
+        # size [seq_len, pred_len]
         # info
         if size == None:
             self.seq_len = 24 * 4 * 4
@@ -202,25 +191,20 @@ class Dataset_ETT_minute(Dataset):
         self.data_stamp = data_stamp
 
     def __getitem__(self, index):
-        i_begin = index
-        i_sep = i_begin + self.seq_len - 1
-        i_end = i_begin + self.seq_len + self.pred_len - 1
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end
+        r_end = r_begin + self.pred_len
 
-        seq_x = self.data_x[i_begin:i_end]
-        if self.inverse:
-            seq_y = np.concatenate(
-                [self.data_x[i_begin + 1 : i_sep], self.data_y[i_sep : i_end + 1]], 0
-            )
-        else:
-            seq_y = self.data_y[i_begin + 1 : i_end + 1]
+        seq_x = self.data_x[s_begin:s_end]
+        seq_y = self.data_y[r_begin:r_end]
+        # seq_x_mark = self.data_stamp[s_begin:s_end]
+        # seq_y_mark = self.data_stamp[r_begin:r_end]
 
-        x = torch.tensor(seq_x, dtype=torch.float)
-        y = torch.tensor(seq_y, dtype=torch.float)
-        x_mark = torch.tensor(self.data_stamp[i_begin:i_end], dtype=torch.int)
+        x = torch.tensor(seq_x, dtype=torch.float).transpose(1, 0)
+        y = torch.tensor(seq_y, dtype=torch.float).transpose(1, 0)
 
-        y[: self.seq_len - 1] = float("nan")
-
-        return x, y, x_mark
+        return x, y
 
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1

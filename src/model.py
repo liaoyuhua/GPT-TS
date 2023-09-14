@@ -1,160 +1,31 @@
 """
-Reference: https://github.com/karpathy/minGPT/tree/master.
+TODO: support LoRA
 """
 import math
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from .embedding import TemporalEmbedding
-
-
-class NewGELU(nn.Module):
-    """
-    Implementation of the GELU activation function currently in Google BERT repo (identical to OpenAI GPT).
-    Reference: Gaussian Error Linear Units (GELU) paper: https://arxiv.org/abs/1606.08415
-    """
-
-    def forward(self, x):
-        return (
-            0.5
-            * x
-            * (
-                1.0
-                + torch.tanh(
-                    math.sqrt(2.0 / math.pi) * (x + 0.044715 * torch.pow(x, 3.0))
-                )
-            )
-        )
-
-
-def mae_loss(prediction, target):
-    mask = ~torch.isnan(target)
-    masked_prediction = prediction[mask]
-    masked_target = target[mask]
-    loss = F.l1_loss(masked_prediction, masked_target)
-    return loss
-
-
-def mse_loss(prediction, target):
-    mask = ~torch.isnan(target)
-    masked_prediction = prediction[mask]
-    masked_target = target[mask]
-    loss = F.mse_loss(masked_prediction, masked_target)
-    return loss
-
-
-class CausalSelfAttention(nn.Module):
-    """
-    A vanilla multi-head masked self-attention layer with a projection at the end.
-    It is possible to use torch.nn.MultiheadAttention here but I am including an
-    explicit implementation here to show that there is nothing too scary here.
-    """
-
-    def __init__(
-        self,
-        block_size: int,
-        n_embd: int,
-        n_head: int,
-        attn_pdrop: float,
-        resid_pdrop: float,
-    ):
-        super().__init__()
-        assert n_embd % n_head == 0
-        # key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(n_embd, 3 * n_embd)
-        # output projection
-        self.c_proj = nn.Linear(n_embd, n_embd)
-        # regularization
-        self.attn_dropout = nn.Dropout(attn_pdrop)
-        self.resid_dropout = nn.Dropout(resid_pdrop)
-        # causal mask to ensure that attention is only applied to the left in the input sequence
-        self.register_buffer(
-            "bias",
-            torch.tril(torch.ones(block_size, block_size)).view(
-                1, 1, block_size, block_size
-            ),
-        )
-        self.n_head = n_head
-        self.n_embd = n_embd
-
-    def forward(self, x):
-        (
-            B,
-            T,
-            C,
-        ) = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
-
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
-            1, 2
-        )  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
-            1, 2
-        )  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
-            1, 2
-        )  # (B, nh, T, hs)
-
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        # re-assemble all head outputs side by side
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
-
-        # output projection
-        y = self.resid_dropout(self.c_proj(y))
-        return y
-
-
-class Block(nn.Module):
-    """an unassuming Transformer block"""
-
-    def __init__(
-        self,
-        block_size: int,
-        n_embd: int,
-        n_head: int,
-        attn_pdrop: float,
-        resid_pdrop: float,
-    ):
-        super().__init__()
-        self.ln_1 = nn.LayerNorm(n_embd)
-        self.attn = CausalSelfAttention(
-            block_size=block_size,
-            n_embd=n_embd,
-            n_head=n_head,
-            attn_pdrop=attn_pdrop,
-            resid_pdrop=resid_pdrop,
-        )
-        self.ln_2 = nn.LayerNorm(n_embd)
-        self.mlp = nn.ModuleDict(
-            dict(
-                c_fc=nn.Linear(n_embd, 4 * n_embd),
-                c_proj=nn.Linear(4 * n_embd, n_embd),
-                act=NewGELU(),
-                dropout=nn.Dropout(resid_pdrop),
-            )
-        )
-        m = self.mlp
-        self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x))))  # MLP forward
-
-    def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlpf(self.ln_2(x))
-        return x
+from torch.cuda.amp import autocast
+from .modules import RevIN, Block, FlattenHead, PoolingHead
 
 
 class GPT2TS(nn.Module):
     """
-    TODO: support more model types, e.g. BERT, Gopher, etc.
+    TODO: support more model backbones, e.g. BERT, Gopher, etc.
+
+    Notation:
+        B: batch size
+        N: number of time series
+        E: number of dimensions of embedding
+        P: number of patches
+        PS: size of the patch
+        L: length of input time series
+        Y: length of prediction time series
     """
 
-    models = ["gpt2"]
+    models = ("gpt2",)
+    head_types = ("flatten", "pooling")
 
     params = {
         "gpt2": dict(block_size=1024, n_head=12, n_embd=768),
@@ -162,56 +33,85 @@ class GPT2TS(nn.Module):
 
     def __init__(
         self,
+        num_series: int,
         input_len: int,
         pred_len: int,
         block_size: int,
         n_layer: int,
         n_head: int,
         n_embd: int,
-        # patch_size: int,
+        patch_size: int,
+        patch_stride: int,
+        revin: bool = True,
+        affine: bool = True,
         embd_pdrop: float = 0.1,
         resid_pdrop: float = 0.1,
         attn_pdrop: float = 0.1,
-        tpe_type: str = "fixed",
-        freq: str = "h",
+        head_type: str = "flatten",
+        individual: bool = False,
+        head_pdtop: float = 0.1,
         model_type: str = "gpt2",
     ):
+        """
+        Args:
+            num_series: number of time series, N
+            input_len: length of input time series, L
+            pred_len: length of prediction time series, Y
+            block_size: length of the block, which is the maximum length of the input.
+                This is fixed by openai gpt2.
+            n_layer: number of transformer layers
+            n_head: number of heads in multihead attention
+            n_embd: number of dimensions of embedding
+            patch_size: size of the patch
+            patch_stride: stride of the patch
+            revin: whether to use RevIN
+            affine: whether to use affine transformation in RevIN
+            embd_pdrop: dropout rate for embedding layer
+            resid_pdrop: dropout rate for residual connection
+            attn_pdrop: dropout rate for attention layer
+            head_type: type of the head, must be one of the keys in `head_types`
+            head_pdtop: dropout rate for the head
+            model_type: type of the model, must be one of the keys in `params`
+        """
         super().__init__()
+        self.revin = revin
+        if self.revin:
+            self.revin_layer = RevIN(num_series, affine=affine)
+
+        self.patch_size = patch_size
+
+        self.patch_stride = patch_stride
+
+        self.patch_num = int((input_len - patch_size) / patch_stride + 1)
+        self.patch_padding = False
+        # padding to make sure the input length is divisible by patch_stride
+        if (input_len - patch_size) % patch_stride != 0:
+            self.padding_patch_layer = nn.ReplicationPad1d((0, patch_stride))
+            self.patch_num += 1
+            self.patch_padding = True
 
         self.input_len = input_len
         self.pred_len = pred_len
         assert (
-            self.input_len + self.pred_len - 1
-        ) <= block_size, f"input_len + pred_len - 1 must be less than or equal to block_size: {block_size}"
+            self.patch_num <= block_size
+        ), f"patch_num must be less than or equal to block_size: {block_size}"
 
         self.block_size = block_size
         self.n_layer = n_layer
         self.n_head = n_head
         self.n_embd = n_embd
-        # self.patch_size = patch_size
+
         assert model_type in self.models, f"model_type must be one of {self.models}"
         self.model_type = model_type
         self.embd_pdrop = embd_pdrop
         self.resid_pdrop = resid_pdrop
         self.attn_pdrop = attn_pdrop
 
-        self.tpe = TemporalEmbedding(
-            d_model=self.n_embd,
-            embed_type=tpe_type,
-            freq=freq,
-        )
-        self.wpe = nn.Embedding(self.input_len + self.pred_len - 1, self.n_embd)
-        self.inorm = nn.InstanceNorm1d(1)  # univariate input
+        self.wpe = nn.Embedding(self.patch_num, self.n_embd)
 
         self.transformer = nn.ModuleDict(
             dict(
-                # wte=nn.Conv1d(
-                #     in_channels=1,
-                #     out_channels=self.n_embd,
-                #     kernel_size=1,
-                #     # stride=self.patch_size,
-                # ),  # input embedding
-                wte=nn.Linear(1, self.n_embd),
+                wte=nn.Linear(self.patch_size, self.n_embd),  # patch embedding
                 drop=nn.Dropout(self.embd_pdrop),
                 h=nn.ModuleList(
                     [
@@ -229,7 +129,24 @@ class GPT2TS(nn.Module):
             )
         )
 
-        self.head = nn.Linear(self.n_embd, 1, bias=False)
+        assert (
+            head_type in self.head_types
+        ), f"head_type must be one of {self.head_types}"
+
+        if head_type == "flatten":
+            self.head = FlattenHead(
+                individual=individual,
+                n_vars=num_series,
+                nf=self.n_embd * self.patch_num,
+                target_window=self.pred_len,
+                head_dropout=head_pdtop,
+            )
+        elif head_type == "pooling":
+            self.head = PoolingHead(
+                n_embd=self.n_embd,
+                target_window=self.pred_len,
+                head_dropout=head_pdtop,
+            )
 
         self.apply(self._init_weights)
         for pn, p in self.named_parameters():
@@ -271,7 +188,7 @@ class GPT2TS(nn.Module):
         sd_hf = model_hf.state_dict()
 
         # filer out unnecessary keys and layers deeper than n_layer
-        drop_keys = ["wte", "wpe", "lm_head", "ln_f"] + [
+        drop_keys = ["wte", "wpe", "lm_head", "ln_f", "ln_1", "ln_2"] + [
             f"h.{i}." for i in range(n_layer, model_hf.config.n_layer)
         ]
         sd_hf = {
@@ -309,73 +226,72 @@ class GPT2TS(nn.Module):
 
         return model
 
-    def forward(self, x, x_mark, y=None):
+    def encoder(self, x: torch.Tensor):
+        """
+        Compute the output of the transformer encoder.
+        """
+        device = x.device
+        B, N, P, PS = x.shape
+        # patch embedding
+        tok_emb = self.transformer.wte(x)  # B, N, P, E
+        tok_emb = torch.reshape(
+            tok_emb,
+            (tok_emb.shape[0] * tok_emb.shape[1], tok_emb.shape[2], tok_emb.shape[3]),
+        )  # B x N, P, E
+
+        # position embedding
+        pos = torch.arange(
+            0, self.patch_num, dtype=torch.long, device=device
+        ).unsqueeze(
+            0
+        )  # 1, P
+        pos_emb = self.wpe(pos)  # 1, P, E
+
+        h = self.transformer.drop(tok_emb + pos_emb)  # B x N, P, E
+
+        for block in self.transformer.h:
+            h = block(h)  # B x N, P, E
+
+        h = h.reshape(B, N, P, -1)  # B, N, P, E
+        h = h.permute(0, 1, 3, 2)  # B, N, E, P
+
+        return h  # B, N, E, P
+
+    def forward(self, x: torch.Tensor):
         """
         Compute the output and loss given the input data.
 
         Args:
-            x: input data, shape (batch_size, input_len+pred_len-1)
-            y: target data, shape (batch_size, input_len+pred_len-1), nan for masked
-                values which are not used for loss computation
+            x: input data, shape (B, N, L)
         """
-        device = x.device
 
-        b, t, c = x.size()
+        # norm
+        if self.revin:
+            x = x.permute(0, 2, 1)  # B, L, N
+            x = self.revin_layer(x, "norm")  # B, L, N
+            x = x.permute(0, 2, 1)  # B, N, L
 
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(
-            0
-        )  # shape (1, t)
-        pos_emb = self.wpe(pos)
-        x_norm = self.inorm(x.transpose(1, 2)).transpose(1, 2)
-        x = x + x_norm
-        tok_emb = self.transformer.wte(x)
-        temp_emb = self.tpe(x_mark)
-        h = self.transformer.drop(tok_emb + pos_emb + temp_emb)
+        # patching
+        if self.patch_padding:
+            x = self.padding_patch_layer(x)
+        x = x.unfold(
+            dimension=-1, size=self.patch_size, step=self.patch_stride
+        )  # B, N, P, PS
 
-        for block in self.transformer.h:
-            h = block(h)
-        out = self.head(h)
+        # encoder
+        h = self.encoder(x)  # B, N, E, P
+        out = self.head(h)  # B, N, Y
 
-        loss = None, None
-        if y is not None:
-            loss = self.loss(out, y)
+        # denorm
+        if self.revin:
+            out = out.permute(0, 2, 1)  # B, Y, N
+            out = self.revin_layer(out, "denorm")  # B, Y, N
+            out = out.permute(0, 2, 1)  # B, N, Y
 
-        return out, loss
-
-    @torch.no_grad()
-    def predict(self, x, x_mark, pred_mark, y_true=None, pred_len=None):
-        """
-        Args:
-            x: input data, shape (batch_size, input_len, 1)
-            x_mark: input mark, shape (batch_size, input_len, n_channel)
-            pred_mark: prediction mark, shape (batch_size, pred_len-1, n_channel)
-        """
-        assert (
-            x.dim() == 3 and x_mark.dim() == 3 and pred_mark.dim() == 3
-        ), "input shape mismatch"
-
-        pred_len = self.pred_len if pred_len is None else pred_len
-
-        assert pred_mark.shape[1] == (
-            pred_len - 1
-        ), f"pred_mark shape mismatch: {pred_mark.shape[1]} vs {pred_len-1}"
-        for i in range(pred_len):
-            out, _ = self(x, x_mark)
-            out = out[:, -1, :].unsqueeze(-1)
-            x = torch.cat([x, out], dim=1)
-            if i < pred_len - 1:
-                x_mark = torch.cat([x_mark, pred_mark[:, i : i + 1, :]], dim=1)
-
-        if y_true is not None:
-            return x[:, -pred_len:, :], self.loss(x[:, -pred_len:, :], y_true)
-        else:
-            return x[:, -pred_len:, :]
+        return out
 
     @property
     def num_params(self):
         n_params = sum(p.numel() for p in self.parameters())
         n_params_grad = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return {"total": n_params, "grad": n_params_grad}
-
-    def loss(self, y_pred, y_true):
-        return (mse_loss(y_pred, y_true), mae_loss(y_pred, y_true))

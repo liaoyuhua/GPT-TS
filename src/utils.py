@@ -1,6 +1,3 @@
-"""
-Reference: Informer (2020).
-"""
 import random
 import numpy as np
 import torch
