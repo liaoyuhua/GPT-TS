@@ -18,7 +18,7 @@ Reproduction of the results of the paper "One Fits All: Power General Time Serie
 
 > add patch embedding
 
-> add RevIN layer for easing drift
+> add RevIN layer to ease drift
 
 > option for batch normalization in transformer layer
 
