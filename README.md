@@ -19,7 +19,7 @@ ETTh1, ETTh2, ETTm1, ETTm2 are put in the folder "data". PyTorch dataset classes
 
 **Model weights**
 
-they would be put in the folder "gpt2" automatically or you can download files from the link: https://huggingface.co/gpt2/tree/main, and put them in folder "gpt2".
+They would be put in the folder "gpt2" automatically or you can download files from the link: https://huggingface.co/gpt2/tree/main, and put them in folder "gpt2".
 
 
 
