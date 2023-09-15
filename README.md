@@ -7,7 +7,7 @@ Reproduction of the results of the paper "One Fits All: Power General Time Serie
 
 **Performance**
 
-| Dataset | Multivariate | seq_len | pred_len |  lr  | transformer_layers | patch_size/patch_stride |  MAE   |
+| dataset | multivariate | seq_len | pred_len |  lr  | layers | patch_size/stride |  mae   |
 | :-----: | :---------: | :-----: | :------: | :--: | :----------------: | :---------------------: | :----: |
 |  ETTH1  |    True     |   384   |    96    | 1e-3 |         6          |          16/8           | 0.4819 |
 |  ETTH1  |    False    |   384   |    96    | 1e-3 |         6          |          16/8           | 0.2641 |
