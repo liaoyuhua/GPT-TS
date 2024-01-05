@@ -192,7 +192,7 @@ class GPT2TS(nn.Module):
             f"h.{i}." for i in range(n_layer, model_hf.config.n_layer)
         ]
         sd_hf = {
-            k: v for k, v in sd_hf.items() if not any((k_ in k) for k_ in drop_keys)
+            k: v for k, v in sd_hf.items() if all(k_ not in k for k_ in drop_keys)
         }
 
         # copy while ensuring all of the parameters are aligned and match in names and shapes

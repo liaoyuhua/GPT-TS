@@ -39,11 +39,11 @@ class RevIN(nn.Module):
             self._init_params()
 
     def forward(self, x: torch.Tensor, mode: str):
-        if mode == "norm":
+        if mode == "denorm":
+            x = self._denormalize(x)
+        elif mode == "norm":
             self._get_statistics(x)
             x = self._normalize(x)
-        elif mode == "denorm":
-            x = self._denormalize(x)
         else:
             raise NotImplementedError
         return x
@@ -76,8 +76,7 @@ class RevIN(nn.Module):
             x = x - self.affine_bias
             x = x / (self.affine_weight + self.eps * self.eps)
         x = x * self.stdev
-        x = x + self.mean
-        return x
+        return x + self.mean
 
 
 class NewGELU(nn.Module):
@@ -231,7 +230,7 @@ class FlattenHead(nn.Module):
             self.linears = nn.ModuleList()
             self.dropouts = nn.ModuleList()
             self.flattens = nn.ModuleList()
-            for i in range(self.n_vars):
+            for _ in range(self.n_vars):
                 self.flattens.append(nn.Flatten(start_dim=-2))
                 self.linears.append(nn.Linear(nf, target_window))
                 self.dropouts.append(nn.Dropout(head_dropout))
