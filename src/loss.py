@@ -11,8 +11,7 @@ def mae_loss(prediction, target):
     mask = ~torch.isnan(target)
     masked_prediction = prediction[mask]
     masked_target = target[mask]
-    loss = F.l1_loss(masked_prediction, masked_target)
-    return loss
+    return F.l1_loss(masked_prediction, masked_target)
 
 
 def mse_loss(prediction, target):
@@ -24,5 +23,4 @@ def mse_loss(prediction, target):
     mask = ~torch.isnan(target)
     masked_prediction = prediction[mask]
     masked_target = target[mask]
-    loss = F.mse_loss(masked_prediction, masked_target)
-    return loss
+    return F.mse_loss(masked_prediction, masked_target)
